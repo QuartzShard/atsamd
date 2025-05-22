@@ -8,7 +8,7 @@ use crate::sercom::dma::{
     read_dma, read_dma_linked, write_dma, write_dma_linked, SercomPtr, SharedSliceBuffer,
     SinkSourceBuffer,
 };
-
+use crate::sercom::spi::Flags;
 use super::{
     Capability, Config, DataWidth, Duplex, Error, MasterMode, OpMode, Receive, Sercom, Size, Slave,
     Spi, Transmit, ValidConfig, ValidPads, Word,
@@ -139,6 +139,267 @@ where
     }
 }
 
+
+/// Since [`SpiBus`] is not implemented for [`Slave`] devices, implement transfer inherently
+impl<P, S, C, R, T> Spi<Config<P, Slave, C>, Duplex, R, T>
+where
+    Config<P, Slave, C>: ValidConfig<Sercom = S>,
+    S: Sercom,
+    P: ValidPads,
+    C: Size + 'static,
+    C::Word: PrimInt + AsPrimitive<DataWidth> + Beat,
+    DataWidth: AsPrimitive<C::Word>,
+    R: AnyChannel<Status = Ready>,
+    T: AnyChannel<Status = Ready>,
+{
+    #[inline]
+    pub fn transfer_complete(&mut self) -> bool {
+        let rx = &mut self._rx_channel;
+        let tx = &mut self._tx_channel;
+        Self::check_complete(rx, tx)
+    }
+
+    #[inline]
+    fn check_complete(rx: &mut R, tx: &mut T ) -> bool {
+        rx.as_mut().xfer_complete() && tx.as_mut().xfer_complete()
+    }
+
+    #[inline]
+    pub fn stop_transfer(&mut self) -> Result<(), Error> {
+        let rx = self._rx_channel.as_mut();
+        let tx = self._tx_channel.as_mut();
+        // Defensively disable channels, or stop the transfer on TXC
+        tx.stop();
+        rx.stop();
+
+        // re-enable RX, in case last op disabled it
+        self.config.as_mut().regs.rx_enable();
+
+        // Check for overflows or DMA errors
+        self.read_status().check_bus_error()?;
+        self._rx_channel
+            .as_mut()
+            .xfer_success()
+            .and(self._tx_channel.as_mut().xfer_success())?;
+        Ok(())
+    }
+
+    /// Initiate the DMA for a transfer, return early
+    ///
+    /// # Safety
+    ///
+    /// You MUST wait for `Spi::check_complete()` after calling this, and then call `self.stop_transfer()` 
+    /// before initiating another transfer. 
+    #[inline]
+    pub unsafe fn transfer_slave_partial_nb(
+        &mut self,
+        mut read: &mut [C::Word],
+        write: &[C::Word],
+    ) -> () {
+        use core::cmp::Ordering;
+        // No work to do here
+        if write.is_empty() && read.is_empty() {
+            return;
+        }
+
+        let mut sercom_ptr = self.sercom_ptr();
+        // Handle 0-length special cases
+        if write.is_empty() {
+            let rx = self._rx_channel.as_mut();
+            // SAFETY: Do not return until transfer is complete or cancelled
+            unsafe {
+                read_dma::<_, _, S>(rx, sercom_ptr, &mut read);
+            }
+            return;
+        } else if read.is_empty() {
+
+            // Ignore RX buffer overflows by disabling the receiver
+            self.config.as_mut().regs.rx_disable();
+            let tx = self._tx_channel.as_mut();
+            let mut words = crate::sercom::dma::SharedSliceBuffer::from_slice(write);
+
+            unsafe {
+                crate::sercom::dma::write_dma::<_, _, S>(tx, sercom_ptr, &mut words);
+            }
+            return;
+        }
+
+        let mut linked_descriptor = DmacDescriptor::default();
+        let mut source_sink_word = self.config.nop_word.as_();
+        let (read_link, write_link) = match read.len().cmp(&write.len()) {
+            Ordering::Equal => (None, None),
+            // Read is shorter than Write, truncate
+            Ordering::Less => {
+                let mut sink =
+                    SinkSourceBuffer::new(&mut source_sink_word, write.len() - read.len());
+                unsafe {
+                    channel::write_descriptor(
+                        &mut linked_descriptor,
+                        &mut sercom_ptr,
+                        &mut sink,
+                        // Add a null descriptor pointer to end the transfer.
+                        core::ptr::null_mut(),
+                    );
+                }
+                (Some(&mut linked_descriptor), None)
+            }
+            // Write is shorter than read, write garbage
+            Ordering::Greater => {
+                let mut source =
+                    SinkSourceBuffer::new(&mut source_sink_word, read.len() - write.len());
+                unsafe {
+                    channel::write_descriptor(
+                        &mut linked_descriptor,
+                        &mut source,
+                        &mut sercom_ptr,
+                        // Add a null descriptor pointer to end the transfer.
+                        core::ptr::null_mut(),
+                    );
+                }
+                (None, Some(&mut linked_descriptor))
+            }
+        };
+    
+        let rx = self._rx_channel.as_mut();
+        let tx = self._tx_channel.as_mut();
+        let mut write = SharedSliceBuffer::from_slice(write);
+
+        // SAFETY: We make sure that any DMA transfer is complete or stopped before
+        // returning. The order of operations is important; the TX transfer
+        // must be ready to send before the RX transfer is initiated, mirroring the host 
+        unsafe {
+            write_dma_linked::<_, _, S>(tx, sercom_ptr.clone(), &mut write, write_link);
+            read_dma_linked::<_, _, S>(rx, sercom_ptr, &mut read, read_link);
+        };
+    }
+
+    /// Perform an SPI transfer.
+    /// Will block if DRE and RXC are not set, and will cancel the current DMA transfers if TXC
+    /// fires.
+    #[inline]
+    pub fn transfer_slave_partial(
+        &mut self,
+        mut read: &mut [C::Word],
+        write: &[C::Word],
+    ) -> Result<(), Error> {
+        unsafe { self.transfer_slave_partial_nb(read, write) };
+        let rx = &mut self._rx_channel;
+        let tx = &mut self._tx_channel;
+        let flags_reg = &self.config.as_ref().regs;
+        let mut flag = flags_reg.read_flags();
+        while ! (Self::check_complete(rx, tx) || flag.intersects(Flags::TXC)) {
+            flag = flags_reg.read_flags();
+            core::hint::spin_loop();
+        }
+        self.stop_transfer();
+        Ok(())
+    }
+
+    #[inline]
+    /// Performs an SPI transfer. Will block until the DMA transfer completes (Buffer is full)
+    fn transfer_slave_blocking(
+        &mut self,
+        mut read: &mut [C::Word],
+        write: &[C::Word],
+    ) -> Result<(), Error> {
+        use crate::sercom::spi::Flags;
+        use core::cmp::Ordering;
+        // No work to do here
+        if write.is_empty() && read.is_empty() {
+            return Ok(());
+        }
+        // We're dependent on the controller, so wait for the flags
+        self.flush_rx()?;
+        self.flush_tx();
+
+        let mut sercom_ptr = self.sercom_ptr();
+        // Handle 0-length special cases
+        if write.is_empty() {
+            let rx = self._rx_channel.as_mut();
+            // SAFETY: Do not return until transfer is complete or cancelled
+            unsafe {
+                read_dma::<_, _, S>(rx, sercom_ptr, &mut read);
+            }
+            while !(rx.xfer_complete()) {
+                core::hint::spin_loop();
+            }
+            // Defensively disable channel, or cancel transfer on TXC
+            rx.stop();
+            // Check for overflows or DMA errors
+            self.read_status().check_bus_error()?;
+            self._rx_channel.as_mut().xfer_success()?;
+            return Ok(());
+        } else if read.is_empty() {
+            self.write_dma(write)?;
+            return Ok(());
+        }
+
+        let mut linked_descriptor = DmacDescriptor::default();
+        let mut source_sink_word = self.config.nop_word.as_();
+        let (read_link, write_link) = match read.len().cmp(&write.len()) {
+            Ordering::Equal => (None, None),
+            // Read is shorter than Write, truncate
+            Ordering::Less => {
+                let mut sink =
+                    SinkSourceBuffer::new(&mut source_sink_word, write.len() - read.len());
+                unsafe {
+                    channel::write_descriptor(
+                        &mut linked_descriptor,
+                        &mut sercom_ptr,
+                        &mut sink,
+                        // Add a null descriptor pointer to end the transfer.
+                        core::ptr::null_mut(),
+                    );
+                }
+                (Some(&mut linked_descriptor), None)
+            }
+            // Write is shorter than read, write garbage
+            Ordering::Greater => {
+                let mut source =
+                    SinkSourceBuffer::new(&mut source_sink_word, read.len() - write.len());
+                unsafe {
+                    channel::write_descriptor(
+                        &mut linked_descriptor,
+                        &mut source,
+                        &mut sercom_ptr,
+                        // Add a null descriptor pointer to end the transfer.
+                        core::ptr::null_mut(),
+                    );
+                }
+                (None, Some(&mut linked_descriptor))
+            }
+        };
+    
+        let rx = self._rx_channel.as_mut();
+        let tx = self._tx_channel.as_mut();
+        let mut write = SharedSliceBuffer::from_slice(write);
+
+        // SAFETY: We make sure that any DMA transfer is complete or stopped before
+        // returning. The order of operations is important; the RX transfer
+        // must be ready to receive before the TX transfer is initiated.
+        unsafe {
+            read_dma_linked::<_, _, S>(rx, sercom_ptr.clone(), &mut read, read_link);
+            write_dma_linked::<_, _, S>(tx, sercom_ptr, &mut write, write_link);
+        }
+
+        while !(rx.xfer_complete() && tx.xfer_complete()) {
+            core::hint::spin_loop();
+        }
+
+        // Defensively disable channels, or stop the transfer on TXC
+        tx.stop();
+        rx.stop();
+
+        // Check for overflows or DMA errors
+        self.read_status().check_bus_error()?;
+        self._rx_channel
+            .as_mut()
+            .xfer_success()
+            .and(self._tx_channel.as_mut().xfer_success())?;
+
+        Ok(())
+    }
+}
 /// [`SpiBus`] implementation for [`Spi`], using DMA transfers.
 impl<P, M, S, C, R, T> SpiBus<Word<C>> for Spi<Config<P, M, C>, Duplex, R, T>
 where
