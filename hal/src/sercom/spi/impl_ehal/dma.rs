@@ -2,6 +2,10 @@
 
 use num_traits::{AsPrimitive, PrimInt};
 
+use super::{
+    Capability, Config, DataWidth, Duplex, Error, MasterMode, OpMode, Receive, Sercom, Size, Slave,
+    Spi, Transmit, ValidConfig, ValidPads, Word,
+};
 use crate::dmac::{channel, sram::DmacDescriptor, AnyChannel, Beat, Buffer, Ready};
 use crate::ehal::spi::SpiBus;
 use crate::sercom::dma::{
@@ -9,10 +13,6 @@ use crate::sercom::dma::{
     SinkSourceBuffer,
 };
 use crate::sercom::spi::Flags;
-use super::{
-    Capability, Config, DataWidth, Duplex, Error, MasterMode, OpMode, Receive, Sercom, Size, Slave,
-    Spi, Transmit, ValidConfig, ValidPads, Word,
-};
 
 impl<P, M, Z, D, R, T> Spi<Config<P, M, Z>, D, R, T>
 where
@@ -139,8 +139,8 @@ where
     }
 }
 
-
-/// Since [`SpiBus`] is not implemented for [`Slave`] devices, implement transfer inherently
+/// Since [`SpiBus`] is not implemented for [`Slave`] devices, implement
+/// transfer inherently
 impl<P, S, C, R, T> Spi<Config<P, Slave, C>, Duplex, R, T>
 where
     Config<P, Slave, C>: ValidConfig<Sercom = S>,
@@ -160,7 +160,7 @@ where
     }
 
     #[inline]
-    fn check_complete(rx: &mut R, tx: &mut T ) -> bool {
+    fn check_complete(rx: &mut R, tx: &mut T) -> bool {
         rx.as_mut().xfer_complete() && tx.as_mut().xfer_complete()
     }
 
@@ -188,8 +188,8 @@ where
     ///
     /// # Safety
     ///
-    /// You MUST wait for `Spi::check_complete()` after calling this, and then call `self.stop_transfer()` 
-    /// before initiating another transfer. 
+    /// You MUST wait for `Spi::check_complete()` after calling this, and then
+    /// call `self.stop_transfer()` before initiating another transfer.
     #[inline]
     pub unsafe fn transfer_slave_partial_nb(
         &mut self,
@@ -212,7 +212,6 @@ where
             }
             return;
         } else if read.is_empty() {
-
             // Ignore RX buffer overflows by disabling the receiver
             self.config.as_mut().regs.rx_disable();
             let tx = self._tx_channel.as_mut();
@@ -259,14 +258,14 @@ where
                 (None, Some(&mut linked_descriptor))
             }
         };
-    
+
         let rx = self._rx_channel.as_mut();
         let tx = self._tx_channel.as_mut();
         let mut write = SharedSliceBuffer::from_slice(write);
 
         // SAFETY: We make sure that any DMA transfer is complete or stopped before
         // returning. The order of operations is important; the TX transfer
-        // must be ready to send before the RX transfer is initiated, mirroring the host 
+        // must be ready to send before the RX transfer is initiated, mirroring the host
         unsafe {
             write_dma_linked::<_, _, S>(tx, sercom_ptr.clone(), &mut write, write_link);
             read_dma_linked::<_, _, S>(rx, sercom_ptr, &mut read, read_link);
@@ -274,8 +273,8 @@ where
     }
 
     /// Perform an SPI transfer.
-    /// Will block if DRE and RXC are not set, and will cancel the current DMA transfers if TXC
-    /// fires.
+    /// Will block if DRE and RXC are not set, and will cancel the current DMA
+    /// transfers if TXC fires.
     #[inline]
     pub fn transfer_slave_partial(
         &mut self,
@@ -287,7 +286,7 @@ where
         let tx = &mut self._tx_channel;
         let flags_reg = &self.config.as_ref().regs;
         let mut flag = flags_reg.read_flags();
-        while ! (Self::check_complete(rx, tx) || flag.intersects(Flags::TXC)) {
+        while !(Self::check_complete(rx, tx) || flag.intersects(Flags::TXC)) {
             flag = flags_reg.read_flags();
             core::hint::spin_loop();
         }
@@ -296,7 +295,8 @@ where
     }
 
     #[inline]
-    /// Performs an SPI transfer. Will block until the DMA transfer completes (Buffer is full)
+    /// Performs an SPI transfer. Will block until the DMA transfer completes
+    /// (Buffer is full)
     fn transfer_slave_blocking(
         &mut self,
         mut read: &mut [C::Word],
@@ -369,7 +369,7 @@ where
                 (None, Some(&mut linked_descriptor))
             }
         };
-    
+
         let rx = self._rx_channel.as_mut();
         let tx = self._tx_channel.as_mut();
         let mut write = SharedSliceBuffer::from_slice(write);
