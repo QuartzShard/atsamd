@@ -533,15 +533,17 @@ pad_table!(
     }
     #[hal_cfg("pc16")]
     PC16 {
+        // According to Crand Central M4, these pins are also I2C
         #[hal_cfg("sercom6")]
-        C: (Sercom6, Pad0, IoSet1),
+        C: (Sercom6, Pad0, IoSet1) + I2C,
         #[hal_cfg("sercom0")]
         D: (Sercom0, Pad1, IoSet4),
     }
     #[hal_cfg("pc17")]
     PC17 {
+        // According to Crand Central M4, these pins are also I2C
         #[hal_cfg("sercom6")]
-        C: (Sercom6, Pad1, IoSet1),
+        C: (Sercom6, Pad1, IoSet1) + I2C,
         #[hal_cfg("sercom0")]
         D: (Sercom0, Pad0, IoSet4),
     }
