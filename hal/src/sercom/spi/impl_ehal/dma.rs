@@ -5,7 +5,7 @@ use num_traits::{AsPrimitive, PrimInt};
 use super::{
     Capability, Config, DataWidth, Duplex, Error, MasterMode, OpMode, Receive, Sercom, Size, Slave,
     Spi, Transmit, ValidConfig, ValidPads, Word,
-}
+};
 use crate::dmac::{channel, sram::DmacDescriptor, AnyChannel, Beat, Buffer, Ready};
 use crate::ehal::spi::SpiBus;
 use crate::sercom::dma::{
