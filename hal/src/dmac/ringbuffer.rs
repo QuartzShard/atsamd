@@ -196,18 +196,16 @@ where
     }
 
     /// Get count of available `T`s in the buffer
-    pub fn available(&mut self) -> usize {
-        self.len * self.wrap as usize + self.write_index() - self.read_index
+    pub fn available(&mut self) -> Result<usize, RingBufferError> {
+        self.check_overflow()?;
+        Ok(self.len * self.wrap as usize + self.write_index() - self.read_index)
     }
 
     /// Copy up to `buf.len()` `T`s out of the [`RingBuffer`], without advancing
     /// the read index. Returns the number of bytes read, which is
     /// min(buf.len(), available)
     pub fn peek(&mut self, buf: &mut [T]) -> Result<usize, RingBufferError> {
-        let readlen = buf.len().min(self.available());
-        if self.check_overflow() {
-            return Err(RingBufferError::Overflow);
-        }
+        let readlen = buf.len().min(self.available()?);
         for (i, slot) in buf.iter_mut().enumerate().take(readlen) {
             *slot = unsafe {
                 let elem = self.ring.as_ptr().add((self.read_index + i) % self.len);
@@ -255,9 +253,14 @@ where
     }
 
     /// Returns `true` if the write_index has lapped the read_index
-    fn check_overflow(&mut self) -> bool {
-        self.wrap == WrapOffset::Overrun
-            || self._write_index > self.read_index && self.wrap == WrapOffset::Wrapped
+    fn check_overflow(&mut self) -> Result<(), RingBufferError> {
+        match self.wrap {
+            WrapOffset::Overrun => Err(RingBufferError::Overflow),
+            WrapOffset::Wrapped if self._write_index > self.read_index => {
+                Err(RingBufferError::Overflow)
+            }
+            WrapOffset::Wrapped | WrapOffset::None => Ok(()),
+        }
     }
 }
 
