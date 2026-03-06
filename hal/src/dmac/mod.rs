@@ -523,6 +523,7 @@ pub(crate) mod sram {
 
 pub mod channel;
 pub mod dma_controller;
+pub mod ringbuffer;
 pub mod transfer;
 
 #[cfg(feature = "async")]
