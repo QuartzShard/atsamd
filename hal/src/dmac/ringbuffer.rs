@@ -112,9 +112,11 @@
 //!     }
 //! }
 //! ```
-//! #  TODO:
-//!  Add specialised impl for [`Available`](crate::dmac::Available) interrupts
-//! to use TCMPL to  count wraps when not using async-mode DMAC
+//! # Future work
+//!
+//! A specialised impl for [`Available`](crate::dmac::Available) interrupt
+//! channels could use TCMPL to count wraps when the async DMAC handler is
+//! not in use.
 
 use crate::dmac::{
     AnyChannel, Beat, Blocked, Buffer, BusyTransfer, ChId, Channel, ChannelId, ChannelInterrupts,
@@ -147,12 +149,13 @@ where
     S: Buffer<Beat = T>,
     T: Copy + Beat,
 {
-    /// Construct a new Ringbuffer and arm DMA
+    /// Construct a new [`RingBuffer`] and arm the DMA transfer.
     ///
-    /// Panics:
-    ///  - if provided incrementing source. Only valid with non-incrementing
-    ///    sources, such as SERCOM
-    ///  - if buf is somehow null.
+    /// # Panics
+    ///
+    /// * If `periph` is an incrementing source (only non-incrementing sources
+    ///   like SERCOM DATA registers are valid).
+    /// * If `buf` is null.
     pub fn new<
         Ch: AnyChannel<Id = ChannelId<C>, Status = Ready, Interrupts = ChannelInterrupts<C>>,
     >(
@@ -214,9 +217,9 @@ where
         }
         Ok(readlen)
     }
-    /// Copy up to `buf.len()` `T`s out of the ['RingBuffer'], and advance the
-    /// read index Returns the number of bytes read, which is min(buf.len(),
-    /// available)
+    /// Copy up to `buf.len()` `T`s out of the [`RingBuffer`], and advance the
+    /// read index. Returns the number of elements read, which is
+    /// `min(buf.len(), available)`.
     pub fn read(&mut self, buf: &mut [T]) -> Result<usize, RingBufferError> {
         let read = self.peek(buf)?;
         self.consume(read);
@@ -252,7 +255,8 @@ where
         xfer.stop()
     }
 
-    /// Returns `true` if the write_index has lapped the read_index
+    /// Returns `Err(RingBufferError::Overflow)` if the write index has
+    /// lapped the read index.
     fn check_overflow(&mut self) -> Result<(), RingBufferError> {
         match self.wrap {
             WrapOffset::Overrun => Err(RingBufferError::Overflow),
