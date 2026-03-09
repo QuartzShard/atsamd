@@ -194,6 +194,7 @@ where
         use embedded_io::ReadReady;
         self.uart.read_flags_errors()?;
         while !self.read_ready()? {
+            self.uart.read_flags_errors()?;
             core::hint::spin_loop();
         }
         self.ringbuf.read(buf).map_err(Self::Error::from)

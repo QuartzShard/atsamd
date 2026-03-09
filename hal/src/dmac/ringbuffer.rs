@@ -139,7 +139,7 @@ where
     ring: ptr::NonNull<T>,
     len: usize,
     read_index: usize,
-    _write_index: usize,
+    write_index: usize,
     wrap: WrapOffset,
 }
 
@@ -179,29 +179,29 @@ where
             ring,
             len,
             read_index: 0,
-            _write_index: 0,
+            write_index: 0,
             wrap: WrapOffset::None,
         }
     }
 
     /// Read BTCNT from dmac SRAM to get the current location of the "write ptr"
-    fn write_index(&mut self) -> usize {
+    fn sync_write_index(&mut self) -> usize {
         // SAFETY: We know where the channel is (in the transfer), we just want to read
         // BTCNT. We do not create a reference from this ptr
         let descriptor: sram::DmacDescriptor =
             unsafe { ptr::read_volatile(sram::writeback_addr().add(ChannelId::<C>::USIZE)) };
         let new = self.len - descriptor.btcnt as usize;
-        if new < self._write_index {
+        if new < self.write_index {
             self.wrap.inc()
         }
-        self._write_index = new;
-        self._write_index
+        self.write_index = new;
+        self.write_index
     }
 
     /// Get count of available `T`s in the buffer
     pub fn available(&mut self) -> Result<usize, RingBufferError> {
         self.check_overflow()?;
-        Ok(self.len * self.wrap as usize + self.write_index() - self.read_index)
+        Ok(self.len * self.wrap as usize + self.write_index - self.read_index)
     }
 
     /// Copy up to `buf.len()` `T`s out of the [`RingBuffer`], without advancing
@@ -222,23 +222,25 @@ where
     /// `min(buf.len(), available)`.
     pub fn read(&mut self, buf: &mut [T]) -> Result<usize, RingBufferError> {
         let read = self.peek(buf)?;
-        self.consume(read);
+        self.consume(read)?;
         Ok(read)
     }
 
     /// Drain `n` `T`s out of the read buffer (advances the read index without
     /// reading anything)
-    pub fn consume(&mut self, n: usize) {
-        let new = (self.read_index + n) % self.len;
+    pub fn consume(&mut self, n: usize) -> Result<(), RingBufferError> {
+        let readlen = n.min(self.available()?);
+        let new = (self.read_index + readlen) % self.len;
         if new < self.read_index {
             self.wrap.dec()
         }
         self.read_index = new;
+        Ok(())
     }
     /// Clears the data in the buffer (sets read_index = write_index). Required
     /// to recover from overruns.
     pub fn clear(&mut self) {
-        self.read_index = self.write_index();
+        self.read_index = self.sync_write_index();
         self.wrap = WrapOffset::None;
     }
 
@@ -258,9 +260,10 @@ where
     /// Returns `Err(RingBufferError::Overflow)` if the write index has
     /// lapped the read index.
     fn check_overflow(&mut self) -> Result<(), RingBufferError> {
+        self.sync_write_index();
         match self.wrap {
             WrapOffset::Overrun => Err(RingBufferError::Overflow),
-            WrapOffset::Wrapped if self._write_index > self.read_index => {
+            WrapOffset::Wrapped if self.write_index > self.read_index => {
                 Err(RingBufferError::Overflow)
             }
             WrapOffset::Wrapped | WrapOffset::None => Ok(()),
