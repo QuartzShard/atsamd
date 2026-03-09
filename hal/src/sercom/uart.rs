@@ -547,6 +547,9 @@ pub use config::*;
 
 pub mod impl_ehal;
 
+#[cfg(feature = "dma")]
+pub mod buffered;
+
 #[cfg(feature = "async")]
 mod async_api;
 #[cfg(feature = "async")]
