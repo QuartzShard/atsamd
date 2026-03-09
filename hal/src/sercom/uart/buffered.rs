@@ -222,6 +222,30 @@ impl From<RingBufferError> for Error {
     }
 }
 
+impl<C, D, Ch, S, I> AsRef<Uart<C, D>> for BufferedUart<'_, C, D, Ch, I>
+where
+    C: ValidConfig<Sercom = S, Word = u8>,
+    D: Receive,
+    Ch: AnyChannel<Interrupts = Blocked>,
+    S: Sercom,
+{
+    fn as_ref(&self) -> &Uart<C, D> {
+        &self.uart
+    }
+}
+
+impl<C, D, Ch, S, I> AsMut<Uart<C, D>> for BufferedUart<'_, C, D, Ch, I>
+where
+    C: ValidConfig<Sercom = S, Word = u8>,
+    D: Receive,
+    Ch: AnyChannel<Interrupts = Blocked>,
+    S: Sercom,
+{
+    fn as_mut(&mut self) -> &mut Uart<C, D> {
+        &mut self.uart
+    }
+}
+
 #[cfg(feature = "async")]
 mod async_impl {
     use super::*;
