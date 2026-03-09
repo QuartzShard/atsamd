@@ -284,6 +284,16 @@ where
     }
 }
 
+/// SAFETY: RingBuffer does not alias or provide sharing. It holds &'buf mut to
+/// its' data.
+unsafe impl<'buf, T, C, S> Send for RingBuffer<'buf, T, C, S>
+where
+    T: Copy + Beat + Send,
+    C: AnyChannel<Interrupts = Blocked> + Send,
+    S: Buffer<Beat = T> + Send,
+{
+}
+
 #[repr(u8)]
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
 /// Tracks how many times the DMA write pointer has wrapped relative to

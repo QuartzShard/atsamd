@@ -97,6 +97,26 @@ pub type UartFutureTx<C> = UartFuture<C, Tx>;
 /// Convenience type for the TX half of a [`Duplex`] [`UartFuture`].
 pub type UartFutureTxDuplex<C> = UartFuture<C, TxDuplex>;
 
+impl<C, D, R, T, S> UartFuture<C, D, R, T>
+where
+    C: ValidConfig<Sercom = S>,
+    D: Capability,
+    S: Sercom,
+{
+    /// Construct a UartFuture from any Uart. Does not enable/unpend.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure the SERCOM interrupt is enabled separately,
+    /// e.g. via [`BufferedUart::from_duplex_future`](super::buffered::BufferedUart::from_duplex_future).
+    pub(super) unsafe fn new_from_half<I>(uart: Uart<C, D, R, T>, _interrupts: I) -> Self
+    where
+        I: Binding<S::Interrupt, InterruptHandler<S>>,
+    {
+        Self { uart }
+    }
+}
+
 impl<C, R, T> UartFuture<C, Duplex, R, T>
 where
     C: ValidConfig,

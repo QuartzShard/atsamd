@@ -14,7 +14,7 @@
 //! The DMA channel must have [`Blocked`] interrupts (see the
 //! [`ringbuffer`](crate::dmac::ringbuffer) module docs for why). Prefer the
 //! lowest-numbered available channel, as Linked Descriptors can interfere with
-//! other DMA trasnfers, if those transfers are not also linked and are on a
+//! other DMA transfers, if those transfers are not also linked and are on a
 //! lower channel. (errata DMA101-6).
 //!
 //! # Blocking reads
@@ -251,7 +251,7 @@ mod async_impl {
     use super::*;
     use crate::{
         async_hal::interrupts::{Binding, InterruptSource},
-        sercom::uart::{Flags, InterruptHandler},
+        sercom::uart::{Flags, InterruptHandler, UartFuture},
     };
     use core::{future::poll_fn, task::Poll};
     use embedded_io_async::Read;
@@ -279,6 +279,30 @@ mod async_impl {
                 uart: self.uart,
                 ringbuf: self.ringbuf,
             }
+        }
+
+        /// Construct a [`BufferedUart`] and a [`UartFuture`] TX half from a
+        /// full-[`Duplex`] [`Uart`], enabling the SERCOM interrupt for both.
+        ///
+        /// This is the async equivalent of
+        /// [`from_duplex`](super::BufferedUart::from_duplex).
+        #[allow(clippy::type_complexity)]
+        pub fn from_duplex_future<I>(
+            uart: Uart<C, Duplex, NoneT, NoneT>,
+            buf: &'buf mut [u8],
+            channel: Channel<Ch::Id, Ready, Ch::Interrupts>,
+            irqs: I,
+        ) -> (
+            BufferedUart<'buf, C, RxDuplex, Ch, I>,
+            UartFuture<C, TxDuplex, NoneT, NoneT>,
+        )
+        where
+            I: Binding<S::Interrupt, InterruptHandler<S>> + Clone,
+        {
+            let (rx, tx) = uart.split();
+            let buffered = BufferedUart::new(rx, buf, channel);
+            let buffered = buffered.into_future(irqs.clone());
+            (buffered, unsafe { UartFuture::new_from_half(tx, irqs) })
         }
     }
 

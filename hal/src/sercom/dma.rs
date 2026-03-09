@@ -139,6 +139,9 @@ unsafe impl<T: Beat> Buffer for SercomPtr<T> {
     }
 }
 
+/// SAFETY: MMIO pointers are Send, they don't point at thread-local stuff
+unsafe impl<T: Beat> Send for SercomPtr<T> {}
+
 //=============================================================================
 // UART DMA transfers
 //=============================================================================
