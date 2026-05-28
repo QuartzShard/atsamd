@@ -847,7 +847,7 @@ impl Default for InterruptFlags {
 ///      - `source` or `dest` has a buffer length of 1, or
 ///      - Both buffers have the same length.
 #[inline]
-pub(crate) unsafe fn write_descriptor<Src: Buffer, Dst: Buffer<Beat = Src::Beat>>(
+pub unsafe fn write_descriptor<Src: Buffer, Dst: Buffer<Beat = Src::Beat>>(
     descriptor: &mut DmacDescriptor,
     source: &mut Src,
     destination: &mut Dst,
