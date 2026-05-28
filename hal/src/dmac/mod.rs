@@ -363,6 +363,8 @@ macro_rules! get {
 pub const NUM_CHANNELS: usize = with_num_channels!(get);
 
 /// DMAC SRAM registers
+pub use sram::DmacDescriptor;
+
 pub(crate) mod sram {
     #![allow(dead_code, unused_braces)]
 
@@ -513,6 +515,29 @@ pub(crate) mod sram {
     pub(super) unsafe fn get_descriptor(channel_id: usize) -> *mut DmacDescriptor {
         DESCRIPTOR_SECTION[channel_id].get()
     }
+}
+
+/// Get a mutable pointer to the specified channel's DMAC descriptor slot
+/// (the per-channel "first descriptor" in `DESCRIPTOR_SECTION` that the
+/// DMAC reads at channel start).
+///
+/// # Safety
+///
+/// The caller must manually synchronize any access to the pointee
+/// [`DmacDescriptor`]. If the pointer is used to create references to
+/// [`DmacDescriptor`], the caller must guarantee that there will **never**
+/// be overlapping `&mut` references (or overlapping `&mut` and `&`
+/// references) to the pointee *at any given time*, as it would be
+/// instantaneous undefined behaviour.
+///
+/// Typical use: by an external DMA-chain wrapper that needs to patch the
+/// per-channel first descriptor's `descaddr` field to bootstrap a multi-
+/// descriptor ring.
+#[inline]
+pub unsafe fn channel_descriptor_ptr(channel_id: usize) -> *mut DmacDescriptor {
+    // SAFETY: forwarded to `sram::get_descriptor`; safety obligations are
+    // the caller's responsibility, documented in our own doc-comment.
+    unsafe { sram::get_descriptor(channel_id) }
 }
 
 pub mod channel;
