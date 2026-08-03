@@ -32,14 +32,29 @@ macro_rules! __internal_backend_methods {
                 d >= <$mode>::HALF_PERIOD
             }
 
+            /// Cap on the catch-up spin below, in RTC ticks. COUNT is documented to
+            /// advance in steps of about 4 ticks, so this is a generous bound on the
+            /// sync delay it exists to absorb.
+            const SYNC_SLACK_TICKS: u8 = 8;
+
             // Ensure that the COUNT is at least the compare value
             // Due to syncing delay this may not be the case initially
             // Note that this has to be done here because RTIC will clear the cmp0 flag
             // before `RtcBackend::on_interrupt` is called.
+            //
+            // The spin is bounded because CC0 is not necessarily the compare that
+            // fired: the timer queue re-arms it, and this handler is also entered by
+            // software via `pend_interrupt`, so the flag can still be set while CC0
+            // already holds a later deadline. Spinning to that one freezes every task
+            // sharing this vector's priority until the deadline — unbounded in
+            // principle, and one full control-loop period in practice.
             if <$mode>::check_interrupt_flag::<$rtic_int>(&rtc) {
                 let compare = <$mode>::get_compare(&rtc, 0);
+                let limit = <$mode>::count(&rtc).wrapping_add(SYNC_SLACK_TICKS.into());
 
-                while less_than_with_wrap(<$mode>::count(&rtc), compare) {}
+                while less_than_with_wrap(<$mode>::count(&rtc), compare)
+                    && less_than_with_wrap(<$mode>::count(&rtc), limit)
+                {}
             }
 
             unsafe { Self::timer_queue().on_monotonic_interrupt(); }
