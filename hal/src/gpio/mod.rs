@@ -59,3 +59,4 @@ pub mod dynpin;
 pub use dynpin::*;
 
 mod reg;
+pub(crate) use reg::RegisterInterface;

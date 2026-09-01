@@ -286,9 +286,17 @@ impl<S: Sercom> Registers<S> {
         // wait for transmission to complete
         loop {
             let intflag = self.i2c_master().intflag().read();
-            // If arbitration was lost, it will be signalled via the mb bit
+            // MB during a read start means no client took the bus over after
+            // the address phase: either arbitration was lost, or the address was
+            // NACKed — the datasheet's "address packet transmit complete, no ACK
+            // received" case sets MB together with STATUS.RXNACK. STATUS tells
+            // them apart; only fall back to a lost arbitration when it is silent.
             if intflag.mb().bit_is_set() {
-                return Err(Error::ArbitrationLost);
+                return Err(self
+                    .read_status()
+                    .check_bus_error()
+                    .err()
+                    .unwrap_or(Error::ArbitrationLost));
             }
             if intflag.sb().bit_is_set() || intflag.error().bit_is_set() {
                 break;

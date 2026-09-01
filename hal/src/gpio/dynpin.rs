@@ -220,7 +220,7 @@ pub struct DynPinId {
 ///
 /// This `struct` takes ownership of a [`DynPinId`] and provides an API to
 /// access the corresponding regsiters.
-struct DynRegisters {
+pub(crate) struct DynRegisters {
     id: DynPinId,
 }
 
@@ -241,7 +241,7 @@ impl DynRegisters {
     /// Users must never create two simultaneous instances of this `struct` with
     /// the same [`DynPinId`]
     #[inline]
-    unsafe fn new(id: DynPinId) -> Self {
+    pub(crate) unsafe fn new(id: DynPinId) -> Self {
         DynRegisters { id }
     }
 }
