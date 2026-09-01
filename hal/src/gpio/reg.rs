@@ -170,7 +170,7 @@ impl From<DynPinMode> for ModeFields {
 /// SAMD11 and SAMD21 PACs do not. Manually re-implement it here.
 #[repr(C)]
 #[allow(clippy::upper_case_acronyms)]
-pub(super) struct GROUP {
+pub(crate) struct GROUP {
     dir: Dir,
     dirclr: Dirclr,
     dirset: Dirset,
@@ -222,7 +222,7 @@ pub(super) struct GROUP {
 /// pin ID is a singleton.
 ///
 /// [`id`]: Self::id
-pub(super) unsafe trait RegisterInterface {
+pub(crate) unsafe trait RegisterInterface {
     /// Provide a [`DynPinId`] identifying the set of registers controlled by
     /// this type.
     fn id(&self) -> DynPinId;

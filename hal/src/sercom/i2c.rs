@@ -404,6 +404,18 @@ pub enum InactiveTimeout {
     Us205 = 0x3,
 }
 
+/// Outcome of [`I2c::clear_bus`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct BusClear {
+    /// SCL pulses issued before SDA read high; `0` means SDA was never held.
+    pub clocks: u8,
+    /// SDA read high once done. `false` means a client still holds it low
+    /// after nine clocks — the bus needs more than a clock-out (power-cycle
+    /// the client).
+    pub sda_released: bool,
+}
+
 /// Abstraction over a I2C peripheral, allowing to perform I2C transactions.
 pub struct I2c<C: AnyConfig, D = crate::typelevel::NoneT> {
     config: C,
@@ -541,6 +553,97 @@ impl<C: AnyConfig, D> I2c<C, D> {
         let mut config = self.config;
         config.as_mut().registers.disable();
         config
+    }
+
+    /// Release a wedged bus and reset the bus state to `IDLE`.
+    ///
+    /// Two faults the SERCOM cannot recover from on its own:
+    ///
+    /// - A client stranded mid-byte — by a reset, a glitch, or a lost
+    ///   arbitration in the middle of a transfer — holds SDA low waiting for
+    ///   clock edges the host will never produce while it waits for a free bus.
+    ///   The standard cure is to clock SCL until the client has shifted its
+    ///   remaining bits out and releases SDA (at most nine pulses), then issue
+    ///   a STOP so every client re-synchronises.
+    /// - After a lost arbitration the bus state latches `BUSY`, which only
+    ///   clears on a detected STOP or on the inactive time-out — and that
+    ///   time-out counts SCL being *held low*, so a bus that is merely idle
+    ///   never trips it. Every later transaction is then refused up front with
+    ///   [`Error::BusError`] and the bus stays dead until the peripheral is
+    ///   re-enabled.
+    ///
+    /// This disables the peripheral, drives the pads as GPIO (SCL push-pull,
+    /// SDA a pulled-up input; a STOP is issued only if clocking was needed),
+    /// restores the pad multiplexing, then re-enables the peripheral, which
+    /// brings the bus state back to `IDLE`. `half_period_cycles` is the SCL
+    /// half-period as a busy-wait in CPU cycles (5 µs at 100 kHz, i.e. the
+    /// core clock in MHz × 5). Blocking, at most ~100 µs at 100 kHz.
+    ///
+    /// Any transaction in flight is abandoned; call this after a transaction
+    /// has failed with [`Error::ArbitrationLost`] or [`Error::BusError`].
+    pub fn clear_bus(&mut self, half_period_cycles: u32) -> BusClear {
+        use crate::gpio::{
+            AnyPin, DynInput, DynOutput, DynPinMode, PinId, PinMode, RegisterInterface,
+            dynpin::DynRegisters,
+        };
+        type Sda<C> = <<C as AnyConfig>::Pads as PadSet>::Sda;
+        type Scl<C> = <<C as AnyConfig>::Pads as PadSet>::Scl;
+        let sda_id = <<Sda<C> as AnyPin>::Id as PinId>::DYN;
+        let sda_mode = <<Sda<C> as AnyPin>::Mode as PinMode>::DYN;
+        let scl_id = <<Scl<C> as AnyPin>::Id as PinId>::DYN;
+        let scl_mode = <<Scl<C> as AnyPin>::Mode as PinMode>::DYN;
+
+        let regs = &mut self.config.as_mut().registers;
+        regs.disable();
+
+        // Safety: the `Pads` inside `self.config` are the sole owners of these
+        // two pin IDs, and `self` is borrowed mutably for the whole method, so
+        // these are the only live register handles for them. Both are dropped,
+        // with the pads' alternate mode restored, before the peripheral is
+        // re-enabled.
+        let mut sda = unsafe { DynRegisters::new(sda_id) };
+        let mut scl = unsafe { DynRegisters::new(scl_id) };
+        let delay = || cortex_m::asm::delay(half_period_cycles);
+
+        // Preload SCL's output latch high before switching it to an output so
+        // the line never dips on the mode change; SDA becomes a pulled-up
+        // input so a client's hold can be observed.
+        scl.write_pin(true);
+        scl.change_mode(DynPinMode::Output(DynOutput::PushPull));
+        sda.change_mode(DynPinMode::Input(DynInput::PullUp));
+        delay();
+
+        let mut clocks = 0u8;
+        while !sda.read_pin() && clocks < 9 {
+            scl.write_pin(false);
+            delay();
+            scl.write_pin(true);
+            delay();
+            clocks += 1;
+        }
+        let sda_released = sda.read_pin();
+        if clocks > 0 {
+            // STOP: SDA low → high while SCL is high.
+            sda.write_pin(false);
+            sda.set_dir(true);
+            delay();
+            sda.write_pin(true);
+            delay();
+            sda.set_dir(false);
+        }
+
+        // Hand the pads back to the SERCOM, then bring it up again: the bus
+        // state comes back `UNKNOWN`, which `enable` forces to `IDLE`.
+        sda.change_mode(sda_mode);
+        scl.change_mode(scl_mode);
+        drop(sda);
+        drop(scl);
+        regs.enable();
+
+        BusClear {
+            clocks,
+            sda_released,
+        }
     }
 }
 
