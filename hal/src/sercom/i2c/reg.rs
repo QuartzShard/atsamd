@@ -427,19 +427,36 @@ impl<S: Sercom> Registers<S> {
         self.i2c_master().data().read().bits() as u8
     }
 
+    /// Wait for the next received byte and return it.
+    ///
+    /// A byte landing sets SB — but a lost arbitration while the host sends its
+    /// ACK/NACK, or a bus error, sets MB (or ERROR) *instead* of SB, so waiting
+    /// on SB alone would spin forever. Any of the three ends the wait; the
+    /// non-SB exits surface the STATUS fault, falling back to a lost
+    /// arbitration when STATUS is silent.
     #[inline]
-    pub(super) fn read_one_blocking(&mut self) -> u8 {
-        while !self.i2c_master().intflag().read().sb().bit_is_set() {
+    pub(super) fn read_one_blocking(&mut self) -> Result<u8, Error> {
+        loop {
+            let intflag = self.i2c_master().intflag().read();
+            if intflag.sb().bit_is_set() {
+                return Ok(self.read_one());
+            }
+            if intflag.mb().bit_is_set() || intflag.error().bit_is_set() {
+                return Err(self
+                    .read_status()
+                    .check_bus_error()
+                    .err()
+                    .unwrap_or(Error::ArbitrationLost));
+            }
             core::hint::spin_loop();
         }
-        self.read_one()
     }
 
     #[inline]
     pub(super) fn fill_buffer(&mut self, buffer: &mut [u8]) -> Result<(), Error> {
         // Some manual iterator gumph because we need to ack bytes after the first.
         let mut iter = buffer.iter_mut();
-        *iter.next().expect("buffer len is at least 1") = self.read_one_blocking();
+        *iter.next().expect("buffer len is at least 1") = self.read_one_blocking()?;
 
         loop {
             match iter.next() {
@@ -447,7 +464,7 @@ impl<S: Sercom> Registers<S> {
                 Some(dest) => {
                     // Ack the last byte so that we can receive another one
                     self.cmd_read();
-                    *dest = self.read_one_blocking();
+                    *dest = self.read_one_blocking()?;
                 }
             }
         }
