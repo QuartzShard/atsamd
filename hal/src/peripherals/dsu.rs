@@ -3,7 +3,11 @@
 //! This module allows users to interact with a DSU peripheral.
 //!
 //! - Run a CRC32 checksum over memory
+//! - Erase the entire chip ([`Dsu::chip_erase`])
+//! - Query the device protection state
 #![warn(missing_docs)]
+
+use core::convert::Infallible;
 
 use crate::pac::{self, Pac};
 
@@ -31,6 +35,8 @@ pub enum Error {
     PacUnlockFailed,
     /// CRC32 operation failed
     CrcFailed,
+    /// The chip-erase command is locked (NVMCTRL `CELCK` command issued)
+    ChipEraseLocked,
     /// Hardware-generated errors
     Peripheral(PeripheralError),
 }
@@ -152,6 +158,92 @@ impl Dsu {
         } else {
             // Return the calculated CRC32 (complement of data register)
             Ok(!self.dsu.data().read().data().bits())
+        }
+    }
+
+    /// Check whether the device is protected by the NVMCTRL security bit
+    ///
+    /// While protected, external debugger access to memories and most DSU
+    /// commands is restricted. The security bit is set with
+    /// [`Nvm::enable_security_bit`](crate::nvm::Nvm::enable_security_bit)
+    /// and only cleared by a chip erase.
+    #[inline]
+    pub fn is_protected(&self) -> bool {
+        self.dsu.statusb().read().prot().bit_is_set()
+    }
+
+    /// Check whether the chip-erase command is locked
+    ///
+    /// While locked, [`Dsu::chip_erase`] and the equivalent debugger-issued
+    /// command are unavailable. The lock is controlled from firmware with
+    /// [`Nvm::enable_chip_erase_lock`](crate::nvm::Nvm::enable_chip_erase_lock)
+    /// and
+    /// [`Nvm::disable_chip_erase_lock`](crate::nvm::Nvm::disable_chip_erase_lock).
+    #[inline]
+    pub fn chip_erase_locked(&self) -> bool {
+        self.dsu.statusb().read().celck().bit_is_set()
+    }
+
+    /// Erase the entire chip
+    ///
+    /// Clears all volatile memories (RAM) and erases the whole flash array
+    /// (including the SmartEEPROM emulation area) simultaneously, then clears
+    /// the NVMCTRL security bit and the chip-erase lock, leaving the device
+    /// unprotected. The `BOOTPROT` bootloader section and the auxiliary pages
+    /// (calibration, factory and user pages) are not affected.
+    ///
+    /// On success this function never returns: the erase destroys the running
+    /// program and its stack while the DSU completes the operation
+    /// independently of the CPU. The device does not run any further code and
+    /// must be recovered with an external reset or power cycle. If a
+    /// bootloader is protected by `BOOTPROT`, it will run again afterwards.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::ChipEraseLocked`] (without side effects) if the
+    /// chip-erase command is locked; unlock it first with
+    /// [`Nvm::disable_chip_erase_lock`](crate::nvm::Nvm::disable_chip_erase_lock).
+    ///
+    /// # Safety
+    ///
+    /// This is a point of no return that destroys all data and firmware
+    /// outside the `BOOTPROT` section. Additionally, the caller must ensure
+    /// that:
+    ///
+    /// - Interrupts are disabled before calling, so no handler runs from erased
+    ///   memory while the operation is in flight.
+    /// - No reset can occur mid-erase — in particular the watchdog must be
+    ///   disabled (and not fused always-on). A reset during the erase aborts it
+    ///   and leaves partially-erased blocks in an unknown state.
+    ///
+    /// ```ignore
+    /// nvm.disable_chip_erase_lock()?; // if the application had locked it
+    /// cortex_m::interrupt::disable();
+    /// unsafe { dsu.chip_erase()? }; // Ok is never returned
+    /// ```
+    pub unsafe fn chip_erase(&mut self) -> Result<Infallible> {
+        // The hardware silently discards CTRL.CE while locked; check first so
+        // the caller gets an error instead of a hang
+        if self.chip_erase_locked() {
+            return Err(Error::ChipEraseLocked);
+        }
+
+        // Clear the status flags indicating termination of the operation
+        self.dsu.statusa().write(|w| {
+            w.done().set_bit();
+            w.fail().set_bit();
+            w.berr().set_bit();
+            w.perr().set_bit()
+        });
+
+        // Start the chip erase; the DSU is an independent AHB master and
+        // completes it regardless of what happens to the CPU
+        self.dsu.ctrl().write(|w| w.ce().set_bit());
+
+        // RAM (including this stack) is being cleared and flash erased under
+        // us; spin without touching memory until the CPU inevitably dies
+        loop {
+            core::hint::spin_loop();
         }
     }
 }
